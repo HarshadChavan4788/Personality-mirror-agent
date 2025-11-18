@@ -4,38 +4,81 @@ import json
 import requests
 from typing import Any
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-if not GEMINI_API_KEY:
-    # Do not raise at import so other tooling can import; raise when called if needed.
-    pass
+# -------------------------------------------------------------------------
+# SAFE CONFIG LOADER (Works for Streamlit + CLI + Background Worker)
+# -------------------------------------------------------------------------
+def load_gemini_config():
+    """
+    Load API key + model from:
+    1. st.secrets (when running in Streamlit)
+    2. Environment variables
+    """
 
-# Default model — change via env var if needed
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    api_key = None
+    model = None
+
+    # 1) Try Streamlit secrets (only works during `streamlit run`)
+    try:
+        import streamlit as st
+
+        if "GEMINI_API_KEY" in st.secrets:
+            api_key = st.secrets["GEMINI_API_KEY"]
+
+        if "GEMINI_MODEL" in st.secrets:
+            model = st.secrets["GEMINI_MODEL"]
+
+    except Exception:
+        # Streamlit not running / secrets not available
+        pass
+
+    # 2) Fallback to environment variables
+    if not api_key:
+        api_key = os.getenv("GEMINI_API_KEY")
+
+    if not model:
+        model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+    return api_key, model
+
+
+# -------------------------------------------------------------------------
+# Build correct Google endpoint
+# -------------------------------------------------------------------------
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
-def build_endpoint(model: str = None) -> str:
-    model = model or GEMINI_MODEL
+def build_endpoint(model: str = None):
     return f"{BASE_URL}/{model}:generateContent"
 
 
+# -------------------------------------------------------------------------
+# MAIN API CALLER (Google Gemini)
+# -------------------------------------------------------------------------
 def call_gemini_api(prompt: str, max_output_tokens: int = 500, temperature: float = 0.7) -> str:
     """
-    Call Google Generative Language REST API and return the generated text.
-    Accepts max_output_tokens to be compatible with callers that pass that name.
+    Calls the Gemini API using the correct REST payload format.
+    Reads secrets from Streamlit or env variables.
     """
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY is not set. Export it or place it in your .env")
 
-    endpoint = build_endpoint()
+    api_key, model = load_gemini_config()
+
+    if not api_key:
+        raise RuntimeError(
+            "❌ GEMINI_API_KEY not found.\n\n"
+            "Add it to `.streamlit/secrets.toml`:\n"
+            "GEMINI_API_KEY = \"your-key\"\n"
+            "GEMINI_MODEL = \"gemini-2.0-flash\"\n\n"
+            "Or export it in the same terminal:\n"
+            "export GEMINI_API_KEY=\"your-key\"\n"
+        )
+
+    endpoint = build_endpoint(model)
 
     payload = {
         "contents": [
             {
                 "role": "user",
-                "parts": [
-                    {"text": prompt}
-                ]
+                "parts": [{"text": prompt}]
             }
         ],
         "generationConfig": {
@@ -45,41 +88,47 @@ def call_gemini_api(prompt: str, max_output_tokens: int = 500, temperature: floa
         }
     }
 
-    resp = requests.post(endpoint, params={"key": GEMINI_API_KEY}, json=payload, timeout=30)
+    response = requests.post(
+        endpoint,
+        params={"key": api_key},
+        json=payload,
+        timeout=30
+    )
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"Gemini API Error {resp.status_code}: {resp.text}")
+    if response.status_code != 200:
+        raise RuntimeError(f"Gemini API Error {response.status_code}: {response.text}")
 
-    data = resp.json()
+    data = response.json()
 
-    # Try multiple common shapes to extract text
+    # -----------------------------------------------------------------
+    # TEXT EXTRACTION LOGIC (All Gemini variants supported)
+    # -----------------------------------------------------------------
     try:
-        # primary: candidates -> content -> parts -> text
-        if "candidates" in data and isinstance(data["candidates"], list) and data["candidates"]:
-            cand = data["candidates"][0]
-            # check cand.content -> parts
-            if isinstance(cand.get("content"), list):
-                parts_texts = []
-                for item in cand["content"]:
-                    if isinstance(item, dict) and item.get("parts"):
-                        for p in item["parts"]:
-                            if isinstance(p, dict) and p.get("text"):
-                                parts_texts.append(p["text"])
-                if parts_texts:
-                    return "\n".join(parts_texts)
-            # older shape: candidates[0].output -> content -> parts
-            if isinstance(cand.get("output"), list):
-                parts_texts = []
-                for out in cand["output"]:
-                    if isinstance(out, dict) and out.get("content"):
-                        for c in out["content"]:
-                            if isinstance(c, dict) and c.get("parts"):
-                                for p in c["parts"]:
-                                    if isinstance(p, dict) and p.get("text"):
-                                        parts_texts.append(p["text"])
-                if parts_texts:
-                    return "\n".join(parts_texts)
-        # fallback: search for any "text" keys in the response
+        if "candidates" in data and data["candidates"]:
+            candidate = data["candidates"][0]
+
+            # Newer schema: candidate.content[list] -> parts[list]
+            if "content" in candidate:
+                texts = []
+                for block in candidate["content"]:
+                    for part in block.get("parts", []):
+                        if "text" in part:
+                            texts.append(part["text"])
+                if texts:
+                    return "\n".join(texts)
+
+            # Older schema: candidate.output -> content -> parts -> text
+            if "output" in candidate:
+                texts = []
+                for out in candidate["output"]:
+                    for item in out.get("content", []):
+                        for part in item.get("parts", []):
+                            if "text" in part:
+                                texts.append(part["text"])
+                if texts:
+                    return "\n".join(texts)
+
+        # fallback: recursively search for any "text" fields
         def find_texts(obj: Any):
             found = []
             if isinstance(obj, dict):
@@ -87,10 +136,10 @@ def call_gemini_api(prompt: str, max_output_tokens: int = 500, temperature: floa
                     if k.lower() == "text" and isinstance(v, str):
                         found.append(v)
                     else:
-                        found += find_texts(v)
+                        found.extend(find_texts(v))
             elif isinstance(obj, list):
-                for e in obj:
-                    found += find_texts(e)
+                for element in obj:
+                    found.extend(find_texts(element))
             return found
 
         texts = find_texts(data)
@@ -100,5 +149,4 @@ def call_gemini_api(prompt: str, max_output_tokens: int = 500, temperature: floa
     except Exception:
         pass
 
-    # final fallback: return JSON dump
     return json.dumps(data)
