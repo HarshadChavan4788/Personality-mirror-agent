@@ -11,14 +11,40 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# Sidebar for branding and instructions
+# Sidebar Footer Styling
+# ---------------------------------------------------------
+st.markdown("""
+<style>
+    /* Make sidebar layout flexible so footer stays at bottom */
+    [data-testid="stSidebar"] > div:first-child {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+    .sidebar-footer {
+        margin-top: auto;
+        padding: 10px 5px;
+        text-align: center;
+        font-size: 14px;
+        color: #444;
+        opacity: 0.8;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# Sidebar content
 # ---------------------------------------------------------
 st.sidebar.image("https://em-content.zobj.net/source/microsoft-teams/363/mirror_1fa9e.png", width=80)
 st.sidebar.title("Personality Mirror")
 st.sidebar.markdown("""
-Welcome! This app uses multiple AI agents to analyze your personality based on your answers. Fill out the form and get a personalized report!
+Welcome! This app uses multiple AI agents to analyze your personality based on your answers.  
+Fill out the form and get your personalized report!
 """)
 st.sidebar.info("Your data is private and never stored.")
+
+# ---- Footer in Sidebar ----
+st.sidebar.markdown("<div class='sidebar-footer'>Made by <b>Harshad Chavan</b></div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
 # Soft styling for main content
