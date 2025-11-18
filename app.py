@@ -11,40 +11,45 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------
-# Sidebar Footer Styling
+# Sidebar Footer Styling (white, large, bold, bottom fixed)
 # ---------------------------------------------------------
 st.markdown("""
 <style>
-    /* Make sidebar layout flexible so footer stays at bottom */
+    /* Sidebar flexible layout */
     [data-testid="stSidebar"] > div:first-child {
         display: flex;
         flex-direction: column;
         height: 100%;
     }
+
+    /* Footer text */
     .sidebar-footer {
         margin-top: auto;
-        padding: 10px 5px;
+        padding: 15px 5px;
         text-align: center;
-        font-size: 14px;
-        color: #444;
-        opacity: 0.8;
+        font-size: 18px;         /* bigger */
+        font-weight: 700;        /* bold */
+        color: white !important; /* white text */
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# Sidebar content
+# Sidebar for branding and instructions
 # ---------------------------------------------------------
 st.sidebar.image("https://em-content.zobj.net/source/microsoft-teams/363/mirror_1fa9e.png", width=80)
 st.sidebar.title("Personality Mirror")
 st.sidebar.markdown("""
 Welcome! This app uses multiple AI agents to analyze your personality based on your answers.  
-Fill out the form and get your personalized report!
+Fill out the form and get a personalized report!
 """)
 st.sidebar.info("Your data is private and never stored.")
 
-# ---- Footer in Sidebar ----
-st.sidebar.markdown("<div class='sidebar-footer'>Made by <b>Harshad Chavan</b></div>", unsafe_allow_html=True)
+# ---- Sidebar Footer ----
+st.sidebar.markdown(
+    "<div class='sidebar-footer'>Made by <b>Harshad Chavan</b></div>",
+    unsafe_allow_html=True
+)
 
 # ---------------------------------------------------------
 # Soft styling for main content
