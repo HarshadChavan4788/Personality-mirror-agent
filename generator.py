@@ -4,75 +4,38 @@ import json
 import requests
 from typing import Any
 
-# ---------------------------------------------------------
-# LOAD GEMINI KEY (Streamlit Cloud + Local Support)
-# ---------------------------------------------------------
-def get_gemini_credentials():
-    """
-    Load Gemini API credentials in this priority:
-    1. Streamlit Secrets (Streamlit Cloud + local)
-    2. Environment variables (Local dev)
-    """
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+if not GEMINI_API_KEY:
+    # Do not raise at import so other tooling can import; raise when called if needed.
+    pass
 
-    api_key = None
-    model = None
-
-    # 1) Try Streamlit secrets (works only inside Streamlit runtime)
-    try:
-        import streamlit as st
-
-        if "GEMINI_API_KEY" in st.secrets:
-            api_key = st.secrets["GEMINI_API_KEY"]
-
-        if "GEMINI_MODEL" in st.secrets:
-            model = st.secrets["GEMINI_MODEL"]
-
-    except Exception:
-        pass  # Streamlit not available (CLI environment)
-
-    # 2) Fallback: environment variables
-    if not api_key:
-        api_key = os.getenv("GEMINI_API_KEY")
-
-    if not model:
-        model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-
-    return api_key, model
-
-
-# ---------------------------------------------------------
-# GOOGLE GENERATIVE API (v1beta)
-# ---------------------------------------------------------
+# Default model — change via env var if needed
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
-def build_endpoint(model: str):
+def build_endpoint(model: str = None) -> str:
+    model = model or GEMINI_MODEL
     return f"{BASE_URL}/{model}:generateContent"
 
 
 def call_gemini_api(prompt: str, max_output_tokens: int = 500, temperature: float = 0.7) -> str:
     """
-    Calls Google Gemini API using proper REST format.
-    Supports Streamlit Cloud + local execution.
+    Call Google Generative Language REST API and return the generated text.
+    Accepts max_output_tokens to be compatible with callers that pass that name.
     """
-    api_key, model = get_gemini_credentials()
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set. Export it or place it in your .env")
 
-    if not api_key:
-        raise RuntimeError(
-            "❌ GEMINI_API_KEY missing.\n\n"
-            "Add it in Streamlit Cloud:\n"
-            "  Settings → Secrets → GEMINI_API_KEY=\"your-key\"\n\n"
-            "Or add a local .streamlit/secrets.toml:\n"
-            "  GEMINI_API_KEY = \"your-key\"\n"
-        )
-
-    endpoint = build_endpoint(model)
+    endpoint = build_endpoint()
 
     payload = {
         "contents": [
             {
                 "role": "user",
-                "parts": [{"text": prompt}]
+                "parts": [
+                    {"text": prompt}
+                ]
             }
         ],
         "generationConfig": {
@@ -82,66 +45,60 @@ def call_gemini_api(prompt: str, max_output_tokens: int = 500, temperature: floa
         }
     }
 
-    response = requests.post(
-        endpoint,
-        params={"key": api_key},
-        json=payload,
-        timeout=30
-    )
+    resp = requests.post(endpoint, params={"key": GEMINI_API_KEY}, json=payload, timeout=30)
 
-    if response.status_code != 200:
-        raise RuntimeError(f"Gemini API Error {response.status_code}: {response.text}")
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini API Error {resp.status_code}: {resp.text}")
 
-    data = response.json()
+    data = resp.json()
 
-    # ---------------------------------------------------------
-    # Robust text extraction (supports all Gemini formats)
-    # ---------------------------------------------------------
+    # Try multiple common shapes to extract text
     try:
-        # Newer format: candidates → content → parts → text
-        if "candidates" in data and data["candidates"]:
+        # primary: candidates -> content -> parts -> text
+        if "candidates" in data and isinstance(data["candidates"], list) and data["candidates"]:
             cand = data["candidates"][0]
-
-            # Standard content → parts structure
-            if "content" in cand:
-                parts = []
-                for c in cand["content"]:
-                    for p in c.get("parts", []):
-                        if p.get("text"):
-                            parts.append(p["text"])
-                if parts:
-                    return "\n".join(parts)
-
-            # Older format: output → content → parts → text
-            if "output" in cand:
-                parts = []
+            # check cand.content -> parts
+            if isinstance(cand.get("content"), list):
+                parts_texts = []
+                for item in cand["content"]:
+                    if isinstance(item, dict) and item.get("parts"):
+                        for p in item["parts"]:
+                            if isinstance(p, dict) and p.get("text"):
+                                parts_texts.append(p["text"])
+                if parts_texts:
+                    return "\n".join(parts_texts)
+            # older shape: candidates[0].output -> content -> parts
+            if isinstance(cand.get("output"), list):
+                parts_texts = []
                 for out in cand["output"]:
-                    for c in out.get("content", []):
-                        for p in c.get("parts", []):
-                            if "text" in p:
-                                parts.append(p["text"])
-                if parts:
-                    return "\n".join(parts)
-
-        # Fallback recursive search for any "text" fields
-        def find_text(obj: Any):
-            results = []
+                    if isinstance(out, dict) and out.get("content"):
+                        for c in out["content"]:
+                            if isinstance(c, dict) and c.get("parts"):
+                                for p in c["parts"]:
+                                    if isinstance(p, dict) and p.get("text"):
+                                        parts_texts.append(p["text"])
+                if parts_texts:
+                    return "\n".join(parts_texts)
+        # fallback: search for any "text" keys in the response
+        def find_texts(obj: Any):
+            found = []
             if isinstance(obj, dict):
                 for k, v in obj.items():
                     if k.lower() == "text" and isinstance(v, str):
-                        results.append(v)
+                        found.append(v)
                     else:
-                        results.extend(find_text(v))
+                        found += find_texts(v)
             elif isinstance(obj, list):
-                for elem in obj:
-                    results.extend(find_text(elem))
-            return results
+                for e in obj:
+                    found += find_texts(e)
+            return found
 
-        texts = find_text(data)
+        texts = find_texts(data)
         if texts:
             return "\n".join(texts)
 
     except Exception:
         pass
 
+    # final fallback: return JSON dump
     return json.dumps(data)
